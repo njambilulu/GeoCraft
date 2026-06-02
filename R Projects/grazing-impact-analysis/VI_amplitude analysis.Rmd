@@ -31,7 +31,7 @@ library(lmerTest)
 # STEP 2 — READ MATCHED DATASET
 # ============================================================
 
-final_df <- read.csv("C:\\Users\\LucyKimani\\OneDrive - Climate Impact\\Lulu\\Projects\\Zambia-CCS\\v4_grazing\\csv\\matched_final_clean.csv")
+final_df <- read.csv("Path\\matched_final_clean.csv")
 
 # confirm
 nrow(final_df)
@@ -44,7 +44,7 @@ table(final_df$stratum)
 # STEP 3 — READ AMPLITUDE DATA
 # ============================================================
 
-amp <- read.csv("C:\\Users\\LucyKimani\\OneDrive - Climate Impact\\Lulu\\Projects\\Zambia-CCS\\v4_grazing\\data\\OSMEN_Amplitude_NDVI_EVI_NDMI_grids_2016_2025_CSV.csv")
+amp <- read.csv("//pathAmplitude_NDVI_EVI_NDMI_grids_2016_2025_CSV.csv")
 
 # fix id type
 amp <- amp %>% mutate(id = as.numeric(id))
