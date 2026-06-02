@@ -1,0 +1,551 @@
+---
+title: "Amplitude _analysis"
+output: html_document
+date: "2026-05-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+# ============================================================
+# STEP 1 — LOAD LIBRARIES
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+```
+
+```{r}
+# ============================================================
+# STEP 2 — READ MATCHED DATASET
+# ============================================================
+
+final_df <- read.csv("C:\\Users\\LucyKimani\\OneDrive - Climate Impact\\Lulu\\Projects\\Zambia-CCS\\v4_grazing\\csv\\matched_final_clean.csv")
+
+# confirm
+nrow(final_df)
+names(final_df)
+table(final_df$Type)
+table(final_df$stratum)
+```
+```{r}
+# ============================================================
+# STEP 3 — READ AMPLITUDE DATA
+# ============================================================
+
+amp <- read.csv("C:\\Users\\LucyKimani\\OneDrive - Climate Impact\\Lulu\\Projects\\Zambia-CCS\\v4_grazing\\data\\OSMEN_Amplitude_NDVI_EVI_NDMI_grids_2016_2025_CSV.csv")
+
+# fix id type
+amp <- amp %>% mutate(id = as.numeric(id))
+final_df <- final_df %>% mutate(id = as.numeric(id))
+
+# join amplitude to matched dataset
+final_df <- final_df %>%
+  left_join(amp %>% select(-Type, -`area.ha.`, -system.index, -.geo),
+            by = "id")
+
+# confirm
+dim(final_df)
+names(final_df)[30:60]
+```
+```{r}
+# ============================================================
+# STEP 4 — DEFINE COLUMNS AND CHECK NAs
+# ============================================================
+
+evi_cols <- paste0("EVI_amp_", 2016:2025)
+ndmi_cols <- paste0("NDMI_amp_", 2016:2025)
+ndvi_cols <- paste0("NDVI_amp_", 2016:2025)
+
+# check NAs
+final_df %>%
+  summarise(across(all_of(evi_cols), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "year", values_to = "n_missing")
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+# ============================================================
+# STEP 5 — AMPLITUDE TREND PLOTS
+# ============================================================
+
+# use 2018-2025 dropping 2017
+amp_cols <- paste0("EVI_amp_", 2019:2025)
+
+# summarise by stratum
+amp_strat_summary <- bind_rows(
+  final_df %>%
+    filter(Type == "Project") %>%
+    group_by(stratum) %>%
+    summarise(across(all_of(amp_cols), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(-stratum, names_to = "Year", values_to = "EVI_amp") %>%
+    mutate(Year = as.numeric(gsub("EVI_amp_", "", Year)), Type = "Project"),
+  
+  final_df %>%
+    filter(Type == "Control") %>%
+    group_by(stratum) %>%
+    summarise(across(all_of(amp_cols), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(-stratum, names_to = "Year", values_to = "EVI_amp") %>%
+    mutate(Year = as.numeric(gsub("EVI_amp_", "", Year)), Type = "Control")
+)
+
+# trend labels
+trend_labels_amp <- amp_strat_summary %>%
+  group_by(stratum, Type) %>%
+  summarise(
+    rate = round(coef(lm(EVI_amp ~ Year))[2] * 1000, 1),
+    y_end = predict(lm(EVI_amp ~ Year), newdata = data.frame(Year = 2025)),
+    .groups = "drop"
+  ) %>%
+  mutate(label = paste0(Type, ": ", rate))
+
+# plot per stratum
+for (s in c("Open", "Moderate", "Dense")) {
+  p <- amp_strat_summary %>%
+    filter(stratum == s) %>%
+    ggplot(aes(x = Year, y = EVI_amp, color = Type, shape = Type)) +
+    geom_point(size = 3, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, linewidth = 1.2) +
+    geom_text(data = trend_labels_amp %>% filter(stratum == s) %>%
+                mutate(y_end = ifelse(Type == "Control", y_end + 0.005, y_end - 0.005)),
+              aes(x = 2025.3, y = y_end, label = label),
+              hjust = 0, size = 3.5) +
+    scale_color_manual(values = c("Project" = "#E04B2A", "Control" = "#2A7AE0")) +
+    scale_shape_manual(values = c("Project" = 3, "Control" = 1)) +
+    scale_x_continuous(limits = c(2018, 2027), breaks = c(2018:2021, 2023:2025)) +
+    labs(title = paste0("EVI Amplitude (2018-2025) — ", s, " canopy"),
+         subtitle = "Lower amplitude = less dry season biomass = less fuel",
+         x = "Year", y = "Mean EVI Amplitude",
+         caption = "Points = observed annual means · Lines = modelled trend") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "top")
+  
+  print(p)
+}
+```
+```{r}
+table(is.na(final_df$EVI_amp_2022))
+```
+```{r}
+# ============================================================
+# STEP 5B — AMPLITUDE TRENDS RESPECTING MATCHING
+# ============================================================
+
+# weighted control mean per project grid
+ctrl_amp_weighted <- final_df %>%
+  filter(Type == "Control") %>%
+  group_by(projCtr_ID, stratum) %>%
+  summarise(across(all_of(amp_cols),
+                   \(x) mean(x, na.rm = TRUE)),
+            .groups = "drop")
+
+# project amplitude
+proj_amp <- final_df %>%
+  filter(Type == "Project") %>%
+  select(projCtr_ID = id, stratum, all_of(amp_cols)) %>%
+  mutate(projCtr_ID = as.character(projCtr_ID))
+
+# summarise by year and stratum
+amp_strat_summary <- bind_rows(
+  proj_amp %>%
+    group_by(stratum) %>%
+    summarise(across(all_of(amp_cols), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(-stratum, names_to = "Year", values_to = "EVI_amp") %>%
+    mutate(Year = as.numeric(gsub("EVI_amp_", "", Year)), Type = "Project"),
+  
+  ctrl_amp_weighted %>%
+    group_by(stratum) %>%
+    summarise(across(all_of(amp_cols), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(-stratum, names_to = "Year", values_to = "EVI_amp") %>%
+    mutate(Year = as.numeric(gsub("EVI_amp_", "", Year)), Type = "Control")
+)
+
+# trend labels
+trend_labels_amp <- amp_strat_summary %>%
+  group_by(stratum, Type) %>%
+  summarise(
+    rate = round(coef(lm(EVI_amp ~ Year))[2] * 1000, 1),
+    y_end = predict(lm(EVI_amp ~ Year), newdata = data.frame(Year = 2025)),
+    .groups = "drop"
+  ) %>%
+  mutate(label = paste0(Type, ": ", rate))
+
+# plot per stratum
+for (s in c("Open", "Moderate", "Dense")) {
+  p <- amp_strat_summary %>%
+    filter(stratum == s) %>%
+    ggplot(aes(x = Year, y = EVI_amp, color = Type, shape = Type)) +
+    geom_point(size = 3, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, linewidth = 1.2) +
+    geom_text(data = trend_labels_amp %>% filter(stratum == s) %>%
+                mutate(y_end = ifelse(Type == "Control", y_end + 0.005, y_end - 0.005)),
+              aes(x = 2025.3, y = y_end, label = label),
+              hjust = 0, size = 3.5) +
+    scale_color_manual(values = c("Project" = "#E04B2A", "Control" = "#2A7AE0")) +
+    scale_shape_manual(values = c("Project" = 3, "Control" = 1)) +
+    scale_x_continuous(limits = c(2018, 2027), breaks = 2018:2025) +
+    labs(title = paste0("EVI Amplitude (2018-2025) — ", s, " canopy"),
+         subtitle = "Lower amplitude = less dry season biomass = less fuel",
+         x = "Year", y = "Mean EVI Amplitude",
+         caption = "Points = observed annual means · Lines = modelled trend") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "top")
+  
+  print(p)
+}
+```
+```{r}
+# simple amplitude trend - just points and connecting lines
+for (s in c("Open", "Moderate", "Dense")) {
+  p <- amp_strat_summary %>%
+    filter(stratum == s) %>%
+    ggplot(aes(x = Year, y = EVI_amp, color = Type, shape = Type)) +
+    geom_point(size = 4) +
+    geom_line(linewidth = 1.2) +
+    scale_color_manual(values = c("Project" = "#E04B2A", "Control" = "#2A7AE0")) +
+    scale_shape_manual(values = c("Project" = 3, "Control" = 1)) +
+    scale_x_continuous(breaks = 2019:2025) +
+    labs(title = paste0("EVI Amplitude trend — ", s, " canopy"),
+         #subtitle = "Is dry season fuel load changing over time?",
+         x = "Year", y = "Mean EVI Amplitude") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "top")
+  
+  print(p)
+}
+```
+
+```{r}
+# check each stratum separately
+for (s in c("Open", "Moderate", "Dense")) {
+  cat("\n--- Stratum:", s, "---\n")
+  d <- amp_model_data %>% filter(stratum == s)
+  cat("Project grids:", n_distinct(d$id[d$treatment == 1]), "\n")
+  cat("Control grids:", n_distinct(d$id[d$treatment == 0]), "\n")
+  cat("Years:", unique(d$year), "\n")
+  cat("NAs in EVI_amp:", sum(is.na(d$EVI_amp)), "\n")
+}
+```
+```{r}
+# fix weights type
+amp_model_data <- amp_model_data %>%
+  mutate(weights = as.numeric(weights))
+
+# check
+class(amp_model_data$weights)
+summary(amp_model_data$weights)
+```
+
+```{r}
+results <- lapply(strata, function(s) {
+  d <- amp_model_data %>% 
+    filter(stratum == s) %>%
+    left_join(final_df %>% select(id, subclass_unique), by = "id")
+  
+  m <- lmer(EVI_amp ~ treatment * year + (1 | subclass_unique),
+            data = d, weights = weights)
+  
+  coefs <- summary(m)$coefficients
+  ci <- confint(m, parm = "treatment:year", method = "Wald")
+  
+  data.frame(
+    stratum = s,
+    ctrl_trend = round(coefs["year", "Estimate"], 5),
+    proj_trend = round(coefs["year", "Estimate"] + 
+                       coefs["treatment:year", "Estimate"], 5),
+    divergence = round(coefs["treatment:year", "Estimate"], 5),
+    ci_low = round(ci[1], 5),
+    ci_high = round(ci[2], 5),
+    t_value = round(coefs["treatment:year", "t value"], 1),
+    p_value = coefs["treatment:year", "Pr(>|t|)"]
+  )
+})
+
+results_df <- bind_rows(results)
+results_df
+```
+
+```{r}
+results_df %>%
+  mutate(
+    ctrl_trend = paste0("+", round(ctrl_trend*1000, 2), "×10⁻³/yr"),
+    proj_trend = paste0(round(proj_trend*1000, 2), "×10⁻³/yr"),
+    divergence = paste0(round(divergence*1000, 2), "×10⁻³/yr"),
+    ci = paste0("[", round(ci_low*1000, 2), ", ", round(ci_high*1000, 2), "]"),
+    p_value = "<0.001"
+  ) %>%
+  select(stratum, ctrl_trend, proj_trend, divergence, ci, t_value, p_value)
+```
+```{r}
+# ============================================================
+# NDVI AMPLITUDE - TRENDS AND MODEL
+# ============================================================
+
+ndvi_cols <- paste0("NDVI_amp_", 2019:2025)
+
+# summarise by stratum respecting matching
+ctrl_ndvi_weighted <- final_df %>%
+  filter(Type == "Control") %>%
+  group_by(projCtr_ID, stratum) %>%
+  summarise(across(all_of(ndvi_cols), \(x) mean(x, na.rm = TRUE)),
+            .groups = "drop")
+
+proj_ndvi <- final_df %>%
+  filter(Type == "Project") %>%
+  select(projCtr_ID = id, stratum, all_of(ndvi_cols)) %>%
+  mutate(projCtr_ID = as.character(projCtr_ID))
+
+# summarise by year and stratum
+ndvi_strat_summary <- bind_rows(
+  proj_ndvi %>%
+    group_by(stratum) %>%
+    summarise(across(all_of(ndvi_cols), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(-stratum, names_to = "Year", values_to = "NDVI_amp") %>%
+    mutate(Year = as.numeric(gsub("NDVI_amp_", "", Year)), Type = "Project"),
+  
+  ctrl_ndvi_weighted %>%
+    group_by(stratum) %>%
+    summarise(across(all_of(ndvi_cols), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(-stratum, names_to = "Year", values_to = "NDVI_amp") %>%
+    mutate(Year = as.numeric(gsub("NDVI_amp_", "", Year)), Type = "Control")
+)
+
+# trend labels
+trend_labels_ndvi <- ndvi_strat_summary %>%
+  group_by(stratum, Type) %>%
+  summarise(
+    rate = round(coef(lm(NDVI_amp ~ Year))[2] * 1000, 1),
+    y_end = predict(lm(NDVI_amp ~ Year), newdata = data.frame(Year = 2025)),
+    .groups = "drop"
+  ) %>%
+  mutate(label = paste0(Type, ": ", rate))
+
+# plot per stratum
+for (s in c("Open", "Moderate", "Dense")) {
+  p <- ndvi_strat_summary %>%
+    filter(stratum == s) %>%
+    ggplot(aes(x = Year, y = NDVI_amp, color = Type, shape = Type)) +
+    geom_point(size = 3, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, linewidth = 1.2) +
+    geom_text(data = trend_labels_ndvi %>% filter(stratum == s) %>%
+                mutate(y_end = ifelse(Type == "Control", y_end + 0.005, y_end - 0.005)),
+              aes(x = 2025.3, y = y_end, label = label),
+              hjust = 0, size = 3.5) +
+    scale_color_manual(values = c("Project" = "#E04B2A", "Control" = "#2A7AE0")) +
+    scale_shape_manual(values = c("Project" = 3, "Control" = 1)) +
+    scale_x_continuous(limits = c(2019, 2027), breaks = 2019:2025) +
+    labs(title = paste0("NDVI Amplitude (2019-2025) — ", s, " canopy"),
+         subtitle = "Lower amplitude = less dry season biomass = less fuel",
+         x = "Year", y = "Mean NDVI Amplitude",
+         caption = "Points = observed annual means · Lines = modelled trend") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "top")
+  
+  print(p)
+}
+```
+```{r}
+for (s in c("Open", "Moderate", "Dense")) {
+  p <- ndvi_strat_summary %>%
+    filter(stratum == s) %>%
+    ggplot(aes(x = Year, y = NDVI_amp, color = Type, shape = Type)) +
+    geom_point(size = 4) +
+    geom_line(linewidth = 1.2) +
+    scale_color_manual(values = c("Project" = "#E04B2A", "Control" = "#2A7AE0")) +
+    scale_shape_manual(values = c("Project" = 3, "Control" = 1)) +
+    scale_x_continuous(breaks = 2019:2025) +
+    labs(title = paste0("NDVI Amplitude trend — ", s, " canopy"),
+         subtitle = "Is dry season fuel load changing over time?",
+         x = "Year", y = "Mean NDVI Amplitude") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "top")
+  
+  print(p)
+}
+```
+```{r}
+# ============================================================
+# NDVI AMPLITUDE MODEL BY STRATUM
+# ============================================================
+
+ndvi_model_data <- final_df %>%
+  select(id, Type, subclass_unique, weights, stratum,
+         all_of(ndvi_cols)) %>%
+  pivot_longer(cols = starts_with("NDVI_amp_"),
+               names_to = "year",
+               values_to = "NDVI_amp") %>%
+  mutate(
+    year = as.numeric(gsub("NDVI_amp_", "", year)),
+    treatment = ifelse(Type == "Project", 1, 0),
+    weights = as.numeric(weights)
+  ) %>%
+  filter(!is.na(NDVI_amp))
+
+# run model per stratum
+ndvi_results <- lapply(strata, function(s) {
+  d <- ndvi_model_data %>% filter(stratum == s)
+  m <- lmer(NDVI_amp ~ treatment * year + (1 | subclass_unique),
+            data = d, weights = weights)
+  
+  coefs <- summary(m)$coefficients
+  ci <- confint(m, parm = "treatment:year", method = "Wald")
+  
+  data.frame(
+    stratum = s,
+    ctrl_trend = round(coefs["year", "Estimate"], 5),
+    proj_trend = round(coefs["year", "Estimate"] + 
+                       coefs["treatment:year", "Estimate"], 5),
+    divergence = round(coefs["treatment:year", "Estimate"], 5),
+    ci_low = round(ci[1], 5),
+    ci_high = round(ci[2], 5),
+    t_value = round(coefs["treatment:year", "t value"], 1),
+    p_value = coefs["treatment:year", "Pr(>|t|)"]
+  )
+})
+
+ndvi_results_df <- bind_rows(ndvi_results)
+ndvi_results_df
+```
+
+```{r}
+# ============================================================
+# NDMI AMPLITUDE - TRENDS AND MODEL
+# ============================================================
+
+ndmi_cols <- paste0("NDMI_amp_", 2019:2025)
+
+# summarise by stratum respecting matching
+ctrl_ndmi_weighted <- final_df %>%
+  filter(Type == "Control") %>%
+  group_by(projCtr_ID, stratum) %>%
+  summarise(across(all_of(ndmi_cols), \(x) mean(x, na.rm = TRUE)),
+            .groups = "drop")
+
+proj_ndmi <- final_df %>%
+  filter(Type == "Project") %>%
+  select(projCtr_ID = id, stratum, all_of(ndmi_cols)) %>%
+  mutate(projCtr_ID = as.character(projCtr_ID))
+
+# summarise by year and stratum
+ndmi_strat_summary <- bind_rows(
+  proj_ndmi %>%
+    group_by(stratum) %>%
+    summarise(across(all_of(ndmi_cols), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(-stratum, names_to = "Year", values_to = "NDMI_amp") %>%
+    mutate(Year = as.numeric(gsub("NDMI_amp_", "", Year)), Type = "Project"),
+  
+  ctrl_ndmi_weighted %>%
+    group_by(stratum) %>%
+    summarise(across(all_of(ndmi_cols), \(x) mean(x, na.rm = TRUE))) %>%
+    pivot_longer(-stratum, names_to = "Year", values_to = "NDMI_amp") %>%
+    mutate(Year = as.numeric(gsub("NDMI_amp_", "", Year)), Type = "Control")
+)
+
+# trend labels
+trend_labels_ndmi <- ndmi_strat_summary %>%
+  group_by(stratum, Type) %>%
+  summarise(
+    rate = round(coef(lm(NDMI_amp ~ Year))[2] * 1000, 1),
+    y_end = predict(lm(NDMI_amp ~ Year), newdata = data.frame(Year = 2025)),
+    .groups = "drop"
+  ) %>%
+  mutate(label = paste0(Type, ": ", rate))
+
+# trend plots
+for (s in c("Open", "Moderate", "Dense")) {
+  p <- ndmi_strat_summary %>%
+    filter(stratum == s) %>%
+    ggplot(aes(x = Year, y = NDMI_amp, color = Type, shape = Type)) +
+    geom_point(size = 3, alpha = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, linewidth = 1.2) +
+    geom_text(data = trend_labels_ndmi %>% filter(stratum == s) %>%
+                mutate(y_end = ifelse(Type == "Control", y_end + 0.005, y_end - 0.005)),
+              aes(x = 2025.3, y = y_end, label = label),
+              hjust = 0, size = 3.5) +
+    scale_color_manual(values = c("Project" = "#E04B2A", "Control" = "#2A7AE0")) +
+    scale_shape_manual(values = c("Project" = 3, "Control" = 1)) +
+    scale_x_continuous(limits = c(2019, 2027), breaks = 2019:2025) +
+    labs(title = paste0("NDMI Amplitude (2019-2025) — ", s, " canopy"),
+         subtitle = "Lower amplitude = less dry season moisture loss = less fuel",
+         x = "Year", y = "Mean NDMI Amplitude",
+         caption = "Points = observed annual means · Lines = modelled trend") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "top")
+  
+  print(p)
+}
+
+# simple line plots
+for (s in c("Open", "Moderate", "Dense")) {
+  p <- ndmi_strat_summary %>%
+    filter(stratum == s) %>%
+    ggplot(aes(x = Year, y = NDMI_amp, color = Type, shape = Type)) +
+    geom_point(size = 4) +
+    geom_line(linewidth = 1.2) +
+    scale_color_manual(values = c("Project" = "#E04B2A", "Control" = "#2A7AE0")) +
+    scale_shape_manual(values = c("Project" = 3, "Control" = 1)) +
+    scale_x_continuous(breaks = 2019:2025) +
+    labs(title = paste0("NDMI Amplitude trend — ", s, " canopy"),
+         subtitle = "Is dry season moisture loss changing over time?",
+         x = "Year", y = "Mean NDMI Amplitude") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "top")
+  
+  print(p)
+}
+
+# model
+ndmi_model_data <- final_df %>%
+  select(id, Type, subclass_unique, weights, stratum,
+         all_of(ndmi_cols)) %>%
+  pivot_longer(cols = starts_with("NDMI_amp_"),
+               names_to = "year",
+               values_to = "NDMI_amp") %>%
+  mutate(
+    year = as.numeric(gsub("NDMI_amp_", "", year)),
+    treatment = ifelse(Type == "Project", 1, 0),
+    weights = as.numeric(weights)
+  ) %>%
+  filter(!is.na(NDMI_amp))
+
+ndmi_results <- lapply(strata, function(s) {
+  d <- ndmi_model_data %>% filter(stratum == s)
+  m <- lmer(NDMI_amp ~ treatment * year + (1 | subclass_unique),
+            data = d, weights = weights)
+  
+  coefs <- summary(m)$coefficients
+  ci <- confint(m, parm = "treatment:year", method = "Wald")
+  
+  data.frame(
+    stratum = s,
+    ctrl_trend = round(coefs["year", "Estimate"], 5),
+    proj_trend = round(coefs["year", "Estimate"] + 
+                       coefs["treatment:year", "Estimate"], 5),
+    divergence = round(coefs["treatment:year", "Estimate"], 5),
+    ci_low = round(ci[1], 5),
+    ci_high = round(ci[2], 5),
+    t_value = round(coefs["treatment:year", "t value"], 1),
+    p_value = coefs["treatment:year", "Pr(>|t|)"]
+  )
+})
+
+ndmi_results_df <- bind_rows(ndmi_results)
+ndmi_results_df
+```
+
